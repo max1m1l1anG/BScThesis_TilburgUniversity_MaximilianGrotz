@@ -1,0 +1,549 @@
+---
+title: 'Thesis: Empirical results'
+author: "Maximilian Grotz"
+date: "2023-06-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(haven)
+library(lubridate)
+library(fastDummies)
+library(stringr)
+library(lmtest)
+library(broom)
+library(sandwich)
+library(readr)
+library(foreign)
+library(stargazer)
+library(plm)
+library(clubSandwich)
+library(gdata) 
+library(zoo)
+```
+
+```{r}
+academic_theme <- function() {
+  theme_minimal() +
+  theme(
+    text = element_text(family = "serif"),
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9), 
+    panel.border = element_rect(colour = "black", fill=NA, size = .1),
+    panel.grid.major = element_line(colour = "grey", size = .2), 
+    axis.ticks = element_line()
+  )
+}
+```
+
+
+# Cleaning
+
+```{r}
+overlap <- function(start, end, year) {
+  x <- intersect(interval(ymd(as.character(start)), ymd(as.character(end))), interval(ymd(paste(as.character(year), "-01-01", sep = "")), ymd(paste(as.character(year), "-12-31", sep = ""))))
+  x <- ifelse(is.na(x), 0, x)
+  return(round(x/86400))
+}
+
+for(i in 1950:1968){ # change to 1950:1968
+  temp <- read_dta(paste("~/SIAB/file", as.character(i), ".dta", sep = ""))
+
+  
+  temp <- temp %>% 
+    select(!c("dups")) %>%
+  group_by(persnr) %>%
+  fill(deutsch, schule, teilzeit, ausbildung_gr, niveau,.direction = "downup") %>%
+  mutate(industry = dplyr::first(na.omit(w08_gen_gr)), first_niveau = first(na.omit(niveau)), first_tentgelt = first(na.omit(tentgelt_gr))) %>%
+  ungroup() %>% 
+  mutate(status = ifelse(erwstat_gr %in% c(1, 2, 5, 6), "Vollzeit", 
+                           ifelse(erwstat_gr == 4, "Altersteilzeit", 
+                                  ifelse(erwstat_gr == 3, "Genigfuegig Beschaeftigt", 
+                                         ifelse(erwstat_gr %in% c(11, 12, 13, 14, 21, 22), "Arbeitslos", 
+                                                ifelse(erwstat_gr  == 23, "Nicht Arbeitslos, arbeitssuchend", 
+                                                       ifelse(erwstat_gr == 32, "Erwerbsfaehige Person", 
+                                                              ifelse(erwstat_gr %in% c(41, 43, 44, 45, 46, 47), "Active labour market policy", 
+                                                                     ifelse(erwstat_gr == 42, "Aufnahme einer Erwerbstaetigkeit", NA)))))))), status = as.factor(status)) %>%
+  group_by(persnr) %>%
+  mutate(odd_employment = !is.na(bnn) & month(endorig) != 12 & day(endorig) != 31, employment_bnn = !is.na(bnn),
+         end_unemp = status == "Arbeitslos" & lead(status) %in% c("Vollzeit", "Geringfuegig Beschaeftigt"), end_unemp = ifelse(is.na(end_unemp), 0, end_unemp), 
+         leave_lf = difftime(endorig, lead(begorig), unit = "days") >= 365, leave_lf = ifelse(is.na(leave_lf), 1, leave_lf), 
+         switch = bnn != lead(bnn), switch = ifelse(is.na(switch), status != lead(status), switch), switch= ifelse(is.na(switch), 1, 0)) %>%
+  select(c("persnr", "begorig", "endorig", "frau", "gebjahr", "deutsch", "ausbildung_gr", "schule", "industry", "first_niveau", "first_tentgelt", "teilzeit", "industry":"switch")) %>% ungroup()
+
+
+for (j in 1990:2010) {
+  temp[paste("year", as.character(j), sep = "")] <- NA
+}
+temp <- temp %>%
+  pivot_longer(year1990:year2010, names_to = "year", names_prefix = "year")  %>%
+  mutate(year = as.numeric(year), age = year - gebjahr) %>%
+  filter(age %in% 40:62) %>% select(!"value") %>%
+  mutate(overlap = overlap(begorig, endorig, year)) %>%
+  group_by(persnr, year) %>%
+  mutate(within = endorig %within% interval(ymd(paste(as.character(year), "-01-01", sep = "")), ymd(paste(as.character(year), "-12-31", sep = ""))), odd_employment = max(within*odd_employment, na.rm = T), end_unemp = max(within*end_unemp, na.rm = T), leave_lf = max(within*end_unemp, na.rm = T), switch = max(within*switch, na.rm = T), 
+         unemp = status == "Arbeitslos", unemp = sum(unemp*overlap, na.rm = T), 
+         lf = sum(overlap), 
+         full_emp = status == "Vollzeit", full_emp = sum(full_emp*overlap, na.rm = T), 
+         alttzt = status == "Altersteilzeit", alttzt = sum(alttzt*overlap, na.rm = T), 
+         employment_bnn = sum(employment_bnn*overlap, na.rm = T)) %>% ungroup() %>%
+  select(!c("overlap", "within"))%>%
+  mutate(across(c("employment_bnn", "unemp", "alttzt", "full_emp", "lf"), ~ifelse(.>365, 365, .))) %>%
+  distinct(persnr, year, .keep_all = T) %>%
+  select(!c("begorig", "endorig", "teilzeit", "status"))
+  save(temp, file = paste(" /SIAB/file", as.character(i), ".RData", sep = ""))
+  rm(temp)
+}
+
+
+load(paste("~/SIAB/file", as.character(1950), ".RData", sep = ""))
+df_final <- temp
+rm(temp)
+
+
+for(i in 1951:1968){ 
+  load(paste("~/SIAB/file", as.character(i), ".RData", sep = ""))
+  df_final <- rbind(df_final, temp)
+}
+
+df_final <- df_final %>%
+  mutate(odd_employment = as.numeric(odd_employment), industry = ifelse(is.na(industry), "Unknown", industry))%>%
+    relocate(year, age)
+
+save(df_final, file = "~/SIAB/df_panel.RData")
+
+
+
+```
+
+
+# Summary
+
+```{r}
+stargazer(df_final %>%
+  filter(age %in% 42:54) %>%
+  group_by(age) %>% summarise(across("odd_employment":"full_emp", ~ mean(.x, na.rm = TRUE)), n = n()) %>% as.data.frame() %>% transpose() %>% as.data.frame(), summary = F,  rownames=FALSE)
+
+stargazer(df_final %>% filter(age %in% 48:52) %>%
+            select(c("frau",  "odd_employment":"full_emp")) %>% as.data.frame(), summary = T, rownames = T)
+
+```
+
+
+# New analysis 2003
+
+## DiD
+
+```{r}
+load(file = "~/SIAB/df_panel.RData")
+
+df1 <- df_final %>%
+  filter(gebjahr %in% 1950:1957, year %in% 2001:2005, age %in% 47:52) %>%
+  mutate(DiD = age %in% c(48, 49, 50, 51, 52) & year >= 2002, treat = age >=50, post = year >= 2003, interaction = DiD*treat*post, post_DiD = post*DiD, treat_DiD = DiD*treat) %>%
+  relocate(year, age)
+depVarList = 12:20
+rm(df_final)
+
+### Individual fixed effects and age fixed effects
+
+Models_indAgeFixedEffects <- lapply(depVarList, function(x){
+  temp <- colnames(df1)[x]
+  colnames(df1)[x] <- "y"
+  model <- plm(y ~ factor(DiD) + factor(post_DiD) + factor(treat_DiD) + factor(interaction) + factor(age),index = c("persnr", "year"), data = df1, model = "within")
+  cluster_se <- try(summary(model, cluster = "age")$coefficients[, "Std. Error"])
+  colnames(df1)[x] <- temp
+  return(list(model, cluster_se))
+})
+
+
+### Controls
+
+Models_withControls <- lapply(depVarList, function(x){
+  temp <- colnames(df1)[x]
+  colnames(df1)[x] <- "y"
+  model <- lm(y ~ factor(DiD) + factor(post_DiD) + factor(treat_DiD) + factor(interaction) + factor(age) +factor(gebjahr) + factor(frau) + factor(deutsch) + factor(ausbildung_gr) + factor(schule)  + factor(industry), data = df1)
+  colnames(df1)[x] <- temp
+  cluster_se <- sqrt(diag(vcovCL(model, cluster = df1$age)))[2:5]
+  coefficients <- coef(model)
+  coefficients <- coefficients[names(coefficients) %in% c("factor(DiD)TRUE", "factor(post_DiD)1", "factor(treat_DiD)1", "factor(interaction)1")]
+  model$coefficients <- coefficients
+  return(list(model, cluster_se))
+})
+
+stargazer(Models_withControls[[1]][[1]], type = "text", single.row = TRUE, report = "vcsp", se = list(Models_withControls[[1]][[2]]))
+
+
+
+### Without any controls
+Models_withoutControls <- lapply(depVarList, function(x){
+  temp <- colnames(df1)[x]
+  colnames(df1)[x] <- "y"
+  model <- lm(y ~ factor(DiD) + factor(post_DiD) + factor(treat_DiD) + factor(interaction), data = df1)
+  colnames(df1)[x] <- temp
+  cluster_se <- sqrt(diag(vcovCL(model, cluster = df1$age)))
+  return(list(model, cluster_se))
+})
+
+stargazer(Models_withoutControls[[1]][[1]], type = "text", single.row = TRUE, report = "vcsp", se = list(Models_withoutControls[[1]][[2]]))
+
+models2003 <- list(Models_withoutControls, Models_withControls, Models_indAgeFixedEffects)
+save(models2003, file = "~/Models/models2003")
+rm(models2003)
+rm(Models_withoutControls, Models_withControls, Models_indAgeFixedEffects)
+
+### Individual fixed effects 4 years
+
+load(file = "~/SIAB/df_panel.RData")
+
+df1 <- df_final %>%
+  filter(gebjahr %in% 1950:1957, year %in% 2001:2005, age %in% 44:52) %>%
+  mutate(DiD = age %in% c(48, 49, 50, 51, 52) & year >= 2002, treat = age >=50, post = year >= 2003, interaction = DiD*treat*post, post_DiD = post*DiD, treat_DiD = DiD*treat) %>%
+  relocate(year, age)
+depVarList = 12:20
+rm(df_final)
+
+Models_indFixedEffects4 <- lapply(depVarList, function(x){
+  temp <- colnames(df1)[x]
+  colnames(df1)[x] <- "y"
+  model <- plm(y ~ factor(DiD) + factor(post_DiD) + factor(treat_DiD) + factor(interaction) + factor(age),index = c("persnr", "year"), data = df1, model = "within")
+  cluster_se <- try(summary(model, cluster = "age")$coefficients[, "Std. Error"])
+  colnames(df1)[x] <- temp
+  return(list(model, cluster_se))
+})
+
+load("~/Models/models2003")
+models2003 <- append(models2003, list(Models_indFixedEffects4))
+
+
+### stargazer
+
+for (i in (depVarList -11)) {
+  try(stargazer(models2003[[1]][[i]][[1]], models2003[[2]][[i]][[1]], models2003[[3]][[i]][[1]], models2003[[4]][[i]][[1]], type = "latex", single.row = TRUE, report = "vcsp",  se = list(models2003[[1]][[i]][[2]], models2003[[2]][[i]][[2]], models2003[[3]][[i]][[2]], models2003[[4]][[i]][[2]])))
+}
+
+```
+
+
+## Event studies with Fixed-effects (1 year)
+
+```{r}
+### Event study ###
+
+#years <- 2000:2012
+#depVarList <- 12:20
+
+
+years <- 2000:2009
+depVarList <- 12:20
+load(file = "~/SIAB/df_panel.RData")
+coefficients <- lapply(depVarList, function(y){
+  list_est_se <-lapply(years, function(x){
+  df1 <- df_final %>%
+    filter(gebjahr %in% (x-52):(x-48), age %in% 47:52, year %in% c(x, x-1)) %>%
+    mutate(DiD = age %in% c(48, 49, 50, 51, 52) & year == x, treat_DiD = age >=50 & year == x, treat_DiD = treat_DiD*DiD) %>% 
+    relocate(year, age)
+  temp <- colnames(df1)[y]
+  colnames(df1)[y] <- "y"
+  model <- try(plm(y ~ DiD + treat_DiD + factor(age),index = c("persnr", "year"), data = df1, model = "within"))
+  cluster_se <- try(summary(model)$coefficients[, "Std. Error"])
+  cluster_se <- cluster_se[2]
+  estimate <- try(summary(model)$coefficients[, "Estimate"])
+  estimate <- estimate[2]
+  colnames(df1)[y] <- temp
+  rm(df1)
+  return(list(x, estimate, cluster_se))
+})
+  return(list(y, list_est_se))})
+
+df <- data.frame(name = NA, year = NA, estimator = NA, se = NA) %>% drop_na()
+for (i in depVarList-11){
+  y <- coefficients[[i]][[1]]
+  for (j in years-1999){
+    df[nrow(df)+1, ] <- c(colnames(df_final)[i+11], j+1999, as.numeric(coefficients[[i]][[2]][[j]][2:3]))
+  }
+}
+df <- df %>%
+  mutate(across(!"name", as.numeric)) %>%
+  mutate(l = estimator - se, u = estimator + se) %>%
+  pivot_longer(cols = c(l, u, estimator), names_to = "group") %>%
+  mutate(est_d = group == "estimator") %>% drop_na()
+
+  
+
+ggplot(df %>% filter(!(name %in% c("alttzt"))), aes(x = year, y = value, group = group, linetype = est_d ==F)) +
+  geom_line() +
+  facet_wrap(~name, scales = "free", ncol = 2)+
+  annotate('rect', xmin=2003, xmax=2007, ymin=-Inf, ymax=+Inf, alpha=.1, fill='black') +
+  academic_theme()+ theme(legend.position = "none") +
+  labs(x = "", y = "") 
+  
+ggsave("Export/EventStudies2003_withFE.png", height = 7, width = 7)
+
+```
+
+## Event studies with Fixed-effects (4 year)
+
+```{r}
+### Event study ###
+
+#years <- 2000:2012
+#depVarList <- 12:20
+
+
+years <- 2000:2009
+depVarList <- 12:20
+load(file = "~/SIAB/df_panel.RData")
+coefficients <- lapply(depVarList, function(y){
+  list_est_se <-lapply(years, function(x){
+  df1 <- df_final %>%
+    filter(gebjahr %in% (x-52):(x-48), year %in% (x-4):x) %>%
+    mutate(DiD = age %in% c(48, 49, 50, 51, 52) & year == x, treat_DiD = age >=50 & year == x, treat_DiD = treat_DiD*DiD) %>% 
+    relocate(year, age)
+  temp <- colnames(df1)[y]
+  colnames(df1)[y] <- "y"
+  model <- try(plm(y ~ DiD + treat_DiD + factor(age),index = c("persnr", "year"), data = df1, model = "within"))
+  cluster_se <- try(summary(model)$coefficients[, "Std. Error"])
+  cluster_se <- cluster_se[2]
+  estimate <- try(summary(model)$coefficients[, "Estimate"])
+  estimate <- estimate[2]
+  colnames(df1)[y] <- temp
+  rm(df1)
+  return(list(x, estimate, cluster_se))
+})
+  return(list(y, list_est_se))})
+
+df <- data.frame(name = NA, year = NA, estimator = NA, se = NA) %>% drop_na()
+for (i in depVarList-11){
+  y <- coefficients[[i]][[1]]
+  for (j in years-1999){
+    df[nrow(df)+1, ] <- c(colnames(df_final)[i+11], j+1999, as.numeric(coefficients[[i]][[2]][[j]][2:3]))
+  }
+}
+df <- df %>%
+  mutate(across(!"name", as.numeric)) %>%
+  mutate(l = estimator - se, u = estimator + se) %>%
+  pivot_longer(cols = c(l, u, estimator), names_to = "group") %>%
+  mutate(est_d = group == "estimator") %>% drop_na()
+
+  
+
+ggplot(df %>% filter(!(name %in% c("alttzt")), year %in% 2001:2010), aes(x = year, y = value, group = group, linetype = est_d ==F)) +
+  geom_line() +
+  facet_wrap(~name, scales = "free", ncol = 2)+
+  annotate('rect', xmin=2003, xmax=2007, ymin=-Inf, ymax=+Inf, alpha=.1, fill='black') +
+  academic_theme()+ theme(legend.position = "none") +
+  labs(x = "", y = "") 
+  
+ggsave("Export/EventStudies2003_withFE4.png", height = 7, width = 7)
+
+```
+
+
+
+## Event studies without Fixed-effects
+
+```{r}
+### Event study ###
+
+#years <- 2000:2012
+#depVarList <- 12:20
+
+
+years <- 2000:2009
+depVarList <- 12:20
+load(file = "~/SIAB/df_panel.RData")
+coefficients <- lapply(depVarList, function(y){
+  list_est_se <-lapply(years, function(x){
+  df1 <- df_final %>%
+    filter(age %in% 47:52) %>%
+    mutate(DiD = age %in% c(48, 49, 50, 51, 52) & year == x, treat_DiD = age >=50 & year == x, treat_DiD = treat_DiD*DiD) %>% #48,, 52 50, 
+    relocate(year, age)
+  temp <- colnames(df1)[y]
+  colnames(df1)[y] <- "y"
+  model <- lm(y ~ DiD + treat_DiD  + factor(frau) + factor(deutsch) + factor(ausbildung_gr) + factor(schule)  + factor(industry), data = df1)
+  cluster_se <- try(summary(model)$coefficients[, "Std. Error"])
+  cluster_se <- cluster_se[2]
+  estimate <- try(summary(model)$coefficients[, "Estimate"])
+  estimate <- estimate[2]
+  colnames(df1)[y] <- temp
+  rm(df1)
+  return(list(x, estimate, cluster_se))
+})
+  return(list(y, list_est_se))})
+
+df <- data.frame(name = NA, year = NA, estimator = NA, se = NA) %>% drop_na()
+for (i in depVarList-11){
+  y <- coefficients[[i]][[1]]
+  for (j in years-1999){
+    df[nrow(df)+1, ] <- c(colnames(df_final)[i+11], j+1999, as.numeric(coefficients[[i]][[2]][[j]][2:3]))
+  }
+}
+df <- df %>%
+  mutate(across(!"name", as.numeric)) %>%
+  mutate(l = estimator - se, u = estimator + se) %>%
+  pivot_longer(cols = c(l, u, estimator), names_to = "group") %>%
+  mutate(est_d = group == "estimator") %>% drop_na()
+
+  
+
+ggplot(df %>% filter(!(name %in% c("alttzt"))), aes(x = year, y = value, group = group, linetype = est_d ==F)) +
+  geom_line() +
+  facet_wrap(~name, scales = "free", ncol = 2)+
+  annotate('rect', xmin=2003, xmax=2007, ymin=-Inf, ymax=+Inf, alpha=.1, fill='black') +
+  academic_theme()+ theme(legend.position = "none") +
+  labs(x = "", y = "") 
+  
+ggsave("Export/EventStudies2003_withoutFE.png", height = 7, width = 7)
+
+```
+
+
+## Placebo DiD
+
+```{r}
+### DiD ###
+
+load(file = "~/SIAB/df_panel.RData")
+
+df1 <- df_final %>%
+  filter(gebjahr %in% 1950:1956, age <=52) %>%
+  mutate(DiD = age %in% c(48, 49, 50, 51, 52), treat = age >=50, post = year >= 2003, interaction = DiD*treat*post, post_DiD = post*DiD, treat_DiD = DiD*treat) %>%
+  relocate(year, age)
+depVarList = 12:20
+rm(df_final)
+
+# Individual fixed effects and age fixed effects
+
+Models_indAgeFixedEffects <- lapply(depVarList, function(x){
+  temp <- colnames(df1)[x]
+  colnames(df1)[x] <- "y"
+  model <- plm(y ~ factor(DiD) + factor(post_DiD) + factor(treat_DiD) + factor(interaction) + factor(age),index = c("persnr", "year"), data = df1, model = "within")
+  cluster_se <- summary(model, cluster = "age")$coefficients[, "Std. Error"]
+  cluster_se <- cluster_se[2:5]
+  coefficients <- coef(model)
+  coefficients <- coefficients[names(coefficients) %in% c("factor(DiD)TRUE", "factor(post_DiD)1", "factor(treat_DiD)1", "factor(interaction)1")]
+  model$coefficients <- coefficients
+  colnames(df1)[x] <- temp
+  return(list(model, cluster_se))
+})
+
+
+years <- 2001:2009
+depVarList <- 12:20
+load(file = "~/SIAB/df_panel.RData")
+coefficients <- lapply(depVarList, function(y){
+  list_est_se <-lapply(years, function(x){
+  df1 <- df_final %>% 
+    filter(gebjahr %in% (x-51):(x-49), age <=52) %>% 
+    mutate(DiD = age %in% c(48, 49, 50, 51, 52), treat = age >=50, treat_DiD = DiD*treat, post = year >= x, interaction = DiD*treat*post, post_DiD = post*DiD) %>%
+    relocate(year, age)
+  temp <- colnames(df1)[y]
+  colnames(df1)[y] <- "y"
+  model <- plm(y ~ factor(DiD) + factor(post_DiD) + factor(treat_DiD) + factor(interaction) + factor(age),index = c("persnr", "year"), data = df1, model = "within")
+  cluster_se <- try(summary(model, cluster = "age")$coefficients[, "Std. Error"])
+  cluster_se <- cluster_se[4]
+  estimate <- try(summary(model)$coefficients[, "Estimate"])
+  estimate <- estimate[4]
+  colnames(df1)[y] <- temp
+  rm(df1)
+  return(list(x, estimate, cluster_se))
+})
+  return(list(y, list_est_se))})
+
+df <- data.frame(name = NA, year = NA, estimator = NA, se = NA) %>% drop_na()
+for (i in depVarList-11){
+  y <- coefficients[[i]][[1]]
+  for (j in years-2000){
+    df[nrow(df)+1, ] <- c(colnames(df_final)[i+11], j+1999, as.numeric(coefficients[[i]][[2]][[j]][2:3]))
+  }
+}
+df <- df %>%
+  mutate(across(!"name", as.numeric)) %>%
+  mutate(l = estimator - se, u = estimator + se) %>%
+  pivot_longer(cols = c(l, u, estimator), names_to = "group") %>%
+  mutate(est_d = group == "estimator") %>% drop_na()
+
+ggplot(df %>% filter(!(name %in% c("alttzt"))), aes(x = year, y = value, group = group, linetype = est_d ==F)) +
+  geom_line() +
+  facet_wrap(~name, scales = "free", ncol = 2)+
+  annotate('rect', xmin=2003, xmax=2007, ymin=-Inf, ymax=+Inf, alpha=.1, fill='black') +
+  academic_theme()+ theme(legend.position = "none") +
+  labs(x = "", y = "") 
+
+ggsave("Export/DiDStudies2003.png", height = 8, width = 6)
+
+
+  
+
+```
+
+
+## Event studies other age groups fixed effect 1
+
+```{r}
+### Event study ###
+
+#years <- 2000:2012
+#depVarList <- 12:20
+
+age1 <- 43
+
+years <- 2000:2008
+depVarList <- 12:20
+load(file = "~/SIAB/df_panel.RData")
+coefficients <- lapply(depVarList, function(y){
+  list_est_se <-lapply(years, function(x){
+  df1 <- df_final %>%
+    filter(age %in% age1:(age1+5), year %in% c(x, x-1)) %>%
+    mutate(DiD = age %in% (age1+1):(age1+5) & year == x, treat_DiD = age >=age1+3 & year == x, treat_DiD = treat_DiD*DiD) %>% #48, 52 50, 
+    relocate(year, age)
+  temp <- colnames(df1)[y]
+  colnames(df1)[y] <- "y"
+  model <- try(plm(y ~ DiD + treat_DiD + factor(age),index = c("persnr", "year"), data = df1, model = "within"))
+  cluster_se <- try(summary(model)$coefficients[, "Std. Error"])
+  cluster_se <- cluster_se[2]
+  estimate <- try(summary(model)$coefficients[, "Estimate"])
+  estimate <- estimate[2]
+  colnames(df1)[y] <- temp
+  rm(df1)
+  return(list(x, estimate, cluster_se))
+})
+  return(list(y, list_est_se))})
+
+df <- data.frame(name = NA, year = NA, estimator = NA, se = NA) %>% drop_na()
+for (i in depVarList-11){
+  y <- coefficients[[i]][[1]]
+  for (j in years-1999){
+    df[nrow(df)+1, ] <- c(colnames(df_final)[i+11], j+1999, as.numeric(coefficients[[i]][[2]][[j]][2:3]))
+  }
+}
+df <- df %>%
+  mutate(across(!"name", as.numeric)) %>%
+  mutate(l = estimator - se, u = estimator + se) %>%
+  pivot_longer(cols = c(l, u, estimator), names_to = "group") %>%
+  mutate(est_d = group == "estimator") %>% drop_na()
+
+  
+
+ggplot(df %>% filter(!(name %in% c("alttzt"))), aes(x = year, y = value, group = group, linetype = est_d ==F)) +
+  geom_line() +
+  facet_wrap(~name, scales = "free", ncol = 2)+
+  annotate('rect', xmin=2003, xmax=2007, ymin=-Inf, ymax=+Inf, alpha=.1, fill='black') +
+  academic_theme()+ theme(legend.position = "none") +
+  labs(x = "", y = "") 
+  
+ggsave("Export/EventStudies2003_46_1.png", height = 7, width = 7)
+
+```
